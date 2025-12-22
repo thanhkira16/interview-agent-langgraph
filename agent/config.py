@@ -46,3 +46,8 @@ llm = ChatGoogleGenerativeAI(
 )
 
 TOTAL_QUESTIONS_PLANNED = int(os.getenv("NUM_QUESTIONS", "5"))
+
+# Context Management Configuration
+# To prevent context overflow when interviewing with many questions
+RECENT_HISTORY_FULL_DETAIL = 5  # Keep last N questions with full details
+MAX_RESPONSE_CHARS_IN_SUMMARY = 150  # Max chars for response text in summary

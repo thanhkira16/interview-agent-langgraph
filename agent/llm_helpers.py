@@ -1,7 +1,113 @@
 from typing import List, Dict, Any, Optional
 import json
-from .config import llm
+from .config import llm, RECENT_HISTORY_FULL_DETAIL, MAX_RESPONSE_CHARS_IN_SUMMARY
 from .models import JobInformation
+
+
+def _format_history_with_summarization(
+    interview_history: List[Dict[str, Any]],
+    recent_count: int = RECENT_HISTORY_FULL_DETAIL,
+) -> List[str]:
+    """
+    Format interview history with summarization strategy:
+    - Recent questions (last N): Full details
+    - Older questions: Summarized (topic, score, key points)
+    
+    This prevents context overflow when interviewing with many questions.
+    """
+    if not interview_history:
+        return []
+    
+    history_summary = []
+    total_questions = len(interview_history)
+    
+    # Split history into old (summarized) and recent (full detail)
+    older_history = interview_history[:-recent_count] if total_questions > recent_count else []
+    recent_history = interview_history[-recent_count:] if total_questions >= recent_count else interview_history
+    
+    # Summarize older questions
+    if older_history:
+        history_summary.append(f"\n📚 Earlier Questions Summary ({len(older_history)} questions):")
+        history_summary.append("=" * 60)
+        
+        # Aggregate insights from older questions
+        topics_covered = []
+        total_older_score = 0
+        strengths = []
+        weaknesses = []
+        
+        for turn in older_history:
+            # Extract topic
+            if turn.get('question') and turn['question'].get('topic'):
+                topics_covered.append(turn['question']['topic'])
+            
+            # Aggregate scores
+            if turn.get('evaluation') and turn['evaluation'].get('score'):
+                total_older_score += turn['evaluation']['score']
+            
+            # Collect strengths and weaknesses
+            if turn.get('evaluation'):
+                eval_data = turn['evaluation']
+                if eval_data.get('strengths'):
+                    strengths.extend(eval_data['strengths'][:2])  # Top 2 per question
+                if eval_data.get('areas_for_improvement'):
+                    weaknesses.extend(eval_data['areas_for_improvement'][:2])
+        
+        # Format summary
+        history_summary.append(f"  Topics Covered: {', '.join(set(topics_covered[:10])) if topics_covered else 'Various'}")
+        if total_older_score > 0:
+            avg_score = total_older_score / len(older_history)
+            history_summary.append(f"  Average Score: {avg_score:.1f}/10")
+        
+        # Unique strengths and weaknesses
+        unique_strengths = list(set(strengths))[:5]
+        unique_weaknesses = list(set(weaknesses))[:5]
+        
+        if unique_strengths:
+            history_summary.append(f"  Key Strengths: {'; '.join(unique_strengths)}")
+        if unique_weaknesses:
+            history_summary.append(f"  Areas to Improve: {'; '.join(unique_weaknesses)}")
+        
+        history_summary.append("=" * 60)
+    
+    # Recent questions - full detail
+    if recent_history:
+        start_idx = len(older_history)
+        history_summary.append(f"\n🔍 Recent Questions (last {len(recent_history)} - Full Detail):")
+        
+        for i, turn in enumerate(recent_history):
+            turn_number = start_idx + i + 1
+            history_summary.append(f"\n--- Turn {turn_number} ---")
+            
+            if turn.get('question'):
+                q = turn['question']
+                history_summary.append(f"  Q: {q.get('text', 'N/A')}")
+                if q.get('topic'):
+                    history_summary.append(f"  Topic: {q['topic']}")
+                if q.get('difficulty'):
+                    history_summary.append(f"  Difficulty: {q['difficulty']}")
+            
+            if turn.get('response'):
+                response_text = turn['response']
+                # Truncate very long responses
+                if len(response_text) > MAX_RESPONSE_CHARS_IN_SUMMARY:
+                    response_text = response_text[:MAX_RESPONSE_CHARS_IN_SUMMARY] + "..."
+                history_summary.append(f"  A: {response_text}")
+            
+            if turn.get('evaluation'):
+                eval_details = turn['evaluation']
+                score = eval_details.get('score', 'N/A')
+                relevance = eval_details.get('relevance_judgment', 'N/A')
+                history_summary.append(f"  Score: {score}/10, Relevance: {relevance}")
+                
+                # Include key feedback points
+                if eval_details.get('strengths'):
+                    history_summary.append(f"  ✅ Strengths: {', '.join(eval_details['strengths'][:2])}")
+                if eval_details.get('areas_for_improvement'):
+                    history_summary.append(f"  ⚠️ To Improve: {', '.join(eval_details['areas_for_improvement'][:2])}")
+    
+    return history_summary
+
 
 
 def call_llm_generate_question(
@@ -33,21 +139,11 @@ def call_llm_generate_question(
             job_info_details.append(f"Job Description: {job_info.job_description}")
         job_info_str = "\n".join(job_info_details)
     
-    # Format interview history
-    history_summary = []
-    if interview_history:
-        history_summary.append(f"Previous {len(interview_history)} question(s) and answers:")
-        for i, turn in enumerate(interview_history):
-            history_summary.append(f"\nTurn {i + 1}:")
-            if turn.get('question'):
-                history_summary.append(f"  Q: {turn['question'].get('text', 'N/A')}")
-            if turn.get('response'):
-                history_summary.append(f"  A: {turn['response'][:200]}...")
-            if turn.get('evaluation'):
-                eval_details = turn['evaluation']
-                score = eval_details.get('score', 'N/A')
-                relevance = eval_details.get('relevance_judgment', 'N/A')
-                history_summary.append(f"  Score: {score}/10, Relevance: {relevance}")
+    
+    # Format interview history with summarization strategy
+    # Recent questions: full detail, Older questions: summarized
+    history_summary = _format_history_with_summarization(interview_history)
+    
     
     prompt_text = f"""
 You are an expert AI interviewer conducting a technical interview for a {job_role} position.
@@ -516,27 +612,11 @@ def call_llm_generate_final_report(
     
     average_score = overall_score / total_questions
     
-    # Build comprehensive history summary
-    history_summary = []
-    for i, turn in enumerate(interview_history):
-        history_summary.append(f"\n{'='*60}")
-        history_summary.append(f"Question {i + 1}:")
-        if turn.get('question'):
-            history_summary.append(f"Topic: {turn['question'].get('topic', 'N/A')}")
-            history_summary.append(f"Difficulty: {turn['question'].get('difficulty', 'N/A')}")
-            history_summary.append(f"Q: {turn['question'].get('text', 'N/A')}")
-        if turn.get('response'):
-            history_summary.append(f"\nCandidate Answer:")
-            history_summary.append(f"{turn['response'][:300]}{'...' if len(turn['response']) > 300 else ''}")
-        if turn.get('evaluation'):
-            eval_data = turn['evaluation']
-            history_summary.append(f"\nEvaluation:")
-            history_summary.append(f"  Score: {eval_data.get('score', 'N/A')}/10")
-            history_summary.append(f"  Relevance: {eval_data.get('relevance_judgment', 'N/A')}")
-            if eval_data.get('strengths'):
-                history_summary.append(f"  Strengths: {', '.join(eval_data['strengths'][:3])}")
-            if eval_data.get('areas_for_improvement'):
-                history_summary.append(f"  Areas to improve: {', '.join(eval_data['areas_for_improvement'][:3])}")
+    
+    # Build history summary with summarization
+    # For final report, we keep more details (last 10 questions) since this is comprehensive
+    history_summary = _format_history_with_summarization(interview_history, recent_count=10)
+    
     
     prompt_text = f"""
 You are an expert AI interviewer providing a comprehensive final report for a {job_role} interview.
