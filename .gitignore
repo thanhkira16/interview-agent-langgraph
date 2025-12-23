@@ -1,6 +1,7 @@
 /agent/.env
 /agent/.idea
-
+.venv
+venv
 db
 .idea
 frontend/node_modules

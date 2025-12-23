@@ -194,8 +194,7 @@ Respond ONLY with a valid JSON object in this exact format:
   "question": {{
     "text": "The complete question text here",
     "topic": "Category/Topic of the question (e.g., 'System Design', 'Java Fundamentals', 'React Hooks')",
-    "difficulty": "Easy | Medium | Hard",
-    "rationale": "Brief explanation of why this question is chosen based on context"
+    "difficulty": "Easy | Medium | Hard"
   }}
 }}
 
@@ -582,10 +581,11 @@ def call_llm_generate_final_report(
         overall_score: float,
         job_role: str,
         job_info: Optional[JobInformation] = None,
-) -> str | None:
+) -> Dict[str, Any] | None:
     """
     Generate comprehensive final interview report with overall assessment.
     Called when interview is completed.
+    Returns JSON format report.
     """
     print(f"-> LLM: Generating final interview report...")
     
@@ -608,7 +608,19 @@ def call_llm_generate_final_report(
     # Calculate statistics
     total_questions = len(interview_history)
     if total_questions == 0:
-        return "No questions were answered in this interview."
+        return {
+            "executive_summary": "No questions were answered in this interview.",
+            "strengths": [],
+            "areas_for_improvement": [],
+            "technical_assessment": "Unable to assess.",
+            "recommendation": {
+                "final_score": "0.0/10",
+                "average_score": 0,
+                "hiring_recommendation": "Not Recommend",
+                "justification": "Insufficient data to make recommendation."
+            },
+            "additional_notes": "No interview data available."
+        }
     
     average_score = overall_score / total_questions
     
@@ -629,7 +641,7 @@ Position: {job_role}
 
 Interview Statistics:
 - Total Questions Asked: {total_questions}
-- Total Score: {overall_score:.1f}/{total_questions * 10}
+- Final Score: {average_score:.1f}/10
 - Average Score per Question: {average_score:.1f}/10
 - Overall Performance: {
     'Excellent' if average_score >= 8 else
@@ -643,41 +655,39 @@ Complete Interview Transcript:
 {'='*60}
 
 Instructions:
-Generate a comprehensive, professional final interview report that includes:
+Generate a comprehensive, professional final interview report in JSON format.
 
-1. **Executive Summary** (2-3 sentences)
-   - Overall impression of the candidate
-   - Key takeaway from the interview
+JSON Response Format:
+{{
+  "executive_summary": "2-3 sentences with overall impression and key takeaway",
+  "strengths": [
+    "Strength 1 with specific examples",
+    "Strength 2",
+    "Strength 3"
+  ],
+  "areas_for_improvement": [
+    "Area 1 with specific recommendations",
+    "Area 2",
+    "Area 3"
+  ],
+  "technical_assessment": "Assessment of technical knowledge, problem-solving approach, and best practices awareness",
+  "recommendation": {{
+    "final_score": "{average_score:.1f}/10",
+    "average_score": {average_score:.1f},
+    "hiring_recommendation": "Strongly Recommend | Recommend | Maybe | Not Recommend",
+    "justification": "Justification based on job requirements and performance"
+  }},
+  "additional_notes": "Standout moments and suggestions for next steps"
+}}
 
-2. **Strengths** (3-5 bullet points)
-   - What the candidate did well across all questions
-   - Specific examples from their answers
-   - Skills demonstrated
+Guidelines:
+- Be constructive, specific, and balanced in your assessment
+- Consider the job requirements when making recommendations
+- Use {average_score:.1f}/10 as the average score in your assessment
+- Hiring recommendations should be one of: Strongly Recommend, Recommend, Maybe, Not Recommend
+- Ensure all JSON is valid and properly formatted
 
-3. **Areas for Improvement** (3-5 bullet points)
-   - Topics where the candidate struggled
-   - Knowledge gaps identified
-   - Specific recommendations for growth
-
-4. **Technical Assessment** (if applicable to role)
-   - Depth of technical knowledge
-   - Problem-solving approach
-   - Best practices awareness
-
-5. **Overall Recommendation**
-   - Final score: {overall_score:.1f}/{total_questions * 10} ({average_score:.1f}/10 average)
-   - Hiring recommendation (Strongly Recommend / Recommend / Maybe / Not Recommend)
-   - Justification based on job requirements
-
-6. **Additional Notes**
-   - Any standout moments (positive or negative)
-   - Suggestions for next steps
-
-Format the report professionally with clear sections and bullet points.
-Be constructive, specific, and balanced in your assessment.
-Consider the job requirements when making recommendations.
-
-Provide ONLY the final report text. Do not include JSON or code formatting.
+Provide ONLY the JSON object. Do not include markdown, code blocks, or any extra text.
 """
 
     print(f"Sending final report prompt ({len(prompt_text)} chars) to LLM...")
@@ -691,9 +701,30 @@ Provide ONLY the final report text. Do not include JSON or code formatting.
             print("LLM final report response was empty.")
             return None
         
-        print(f"Generated final report (first 100 chars): {response_content[:100]}...")
-        return response_content
+        # Clean markdown formatting if present
+        if response_content.startswith("```json"):
+            response_content = response_content[7:]
+        if response_content.startswith("```"):
+            response_content = response_content[3:]
+        if response_content.endswith("```"):
+            response_content = response_content[:-3]
         
+        response_content = response_content.strip()
+        
+        # Parse JSON
+        report_data = json.loads(response_content)
+        
+        if not isinstance(report_data, dict):
+            print("Invalid JSON structure - expected object")
+            return None
+        
+        print(f"✅ Generated final report successfully")
+        return report_data
+        
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse LLM response as JSON: {e}")
+        print(f"Response was: {response_content[:200]}...")
+        return None
     except Exception as e:
         print(f"LLM final report generation failed: {e}")
         return None

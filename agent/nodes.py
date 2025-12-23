@@ -267,6 +267,7 @@ def generate_final_report_node(state: InterviewState) -> Dict[str, Any]:
     print("--- Node: generate_final_report ---")
     
     from .llm_helpers import call_llm_generate_final_report
+    import json
     
     interview_history = state.interview_history
     overall_score = state.overall_score
@@ -275,7 +276,20 @@ def generate_final_report_node(state: InterviewState) -> Dict[str, Any]:
     
     if not interview_history:
         print("No interview history to generate report from.")
-        return {"feedback": "Interview completed with no questions answered."}
+        fallback_report = {
+            "executive_summary": "Interview completed with no questions answered.",
+            "strengths": [],
+            "areas_for_improvement": [],
+            "technical_assessment": "Unable to assess.",
+            "recommendation": {
+                "final_score": "0/0",
+                "average_score": 0,
+                "hiring_recommendation": "Not Recommend",
+                "justification": "No data available."
+            },
+            "additional_notes": "No interview data available."
+        }
+        return {"feedback": json.dumps(fallback_report, indent=2, ensure_ascii=False)}
     
     final_report = call_llm_generate_final_report(
         interview_history=interview_history,
@@ -286,20 +300,23 @@ def generate_final_report_node(state: InterviewState) -> Dict[str, Any]:
     
     if final_report:
         print("✅ Final report generated successfully")
-        return {"feedback": final_report}
+        # Convert dict to JSON string with indentation
+        return {"feedback": json.dumps(final_report, indent=2, ensure_ascii=False)}
     else:
         print("❌ Failed to generate final report")
-        # Fallback to basic summary
+        # Fallback to basic summary in JSON format
         avg_score = overall_score / len(interview_history) if interview_history else 0
-        fallback_report = f"""
-Interview Completed
-
-Total Questions: {len(interview_history)}
-Overall Score: {overall_score:.1f}/{len(interview_history) * 10}
-Average Score: {avg_score:.1f}/10
-
-Performance: {'Excellent' if avg_score >= 8 else 'Good' if avg_score >= 6 else 'Fair' if avg_score >= 4 else 'Needs Improvement'}
-
-Thank you for completing the interview!
-"""
-        return {"feedback": fallback_report.strip()}
+        fallback_report = {
+            "executive_summary": f"Interview completed for {job_role} position.",
+            "strengths": ["Candidate engaged with interview questions."],
+            "areas_for_improvement": ["Review feedback from individual questions for improvement areas."],
+            "technical_assessment": f"Average performance: {avg_score:.1f}/10",
+            "recommendation": {
+                "final_score": f"{avg_score:.1f}/10",
+                "average_score": round(avg_score, 2),
+                "hiring_recommendation": "Maybe" if avg_score >= 5 else "Not Recommend",
+                "justification": "See individual question evaluations for detailed assessment."
+            },
+            "additional_notes": "Thank you for completing the interview!"
+        }
+        return {"feedback": json.dumps(fallback_report, indent=2, ensure_ascii=False)}

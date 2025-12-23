@@ -410,7 +410,6 @@ Start a new interview session.
     "text": "Explain the difference between process and thread in operating systems.",
     "topic": "Operating Systems",
     "difficulty": "Medium",
-    "rationale": "Starting with fundamental CS concepts relevant to the role."
   },
   "overall_score": 0,
   "feedback": null,
