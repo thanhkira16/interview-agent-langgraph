@@ -114,14 +114,24 @@ def call_llm_generate_question(
         interview_history: List[Dict[str, Any]],
         job_role: str,
         job_info: Optional[JobInformation] = None,
+        cv_info: Optional['CVInformation'] = None,
+        cv_verification: Optional['CVVerificationResults'] = None,
         questions_asked_count: int = 0,
         total_planned: int = 5,
+        cv_jd_matching: Optional[Dict[str, Any]] = None,  # NEW: Pre-calculated matching
 ) -> Dict[str, Any] | None:
     """
     Use LLM to dynamically generate the next interview question based on context.
-    This replaces selecting from a fixed pool.
+    Now includes CV-JD matching to prioritize JD-relevant skills verification.
     """
     print(f"→ LLM: Generating question {questions_asked_count + 1}/{total_planned}...")
+    
+    # Calculate CV-JD matching on first question (if not provided)
+    if cv_jd_matching is None and cv_info and job_info and questions_asked_count == 0:
+        from .cv_jd_matching import calculate_cv_jd_matching
+        print("📊 Calculating CV-JD matching for first question...")
+        cv_jd_matching = calculate_cv_jd_matching(cv_info, job_info, llm)
+    
     
     # Format job information
     job_info_str = ""
@@ -139,6 +149,94 @@ def call_llm_generate_question(
             job_info_details.append(f"Job Description: {job_info.job_description}")
         job_info_str = "\n".join(job_info_details)
     
+    # Format CV information
+    cv_info_str = ""
+    if cv_info:
+        cv_details = []
+        if cv_info.candidate_name:
+            cv_details.append(f"Candidate: {cv_info.candidate_name}")
+        if cv_info.years_of_experience:
+            cv_details.append(f"Years of Experience: {cv_info.years_of_experience}")
+        if cv_info.skills:
+            cv_details.append(f"Skills: {', '.join(cv_info.skills[:10])}")  # Top 10 skills
+        if cv_info.work_experience:
+            cv_details.append(f"Recent Experience:")
+            for exp in cv_info.work_experience[:3]:  # Top 3 most recent
+                cv_details.append(f"  - {exp.get('title', 'N/A')} at {exp.get('company', 'N/A')} ({exp.get('duration', 'N/A')})")
+        if cv_info.education:
+            cv_details.append(f"Education:")
+            for edu in cv_info.education[:2]:  # Top 2
+                cv_details.append(f"  - {edu.get('degree', 'N/A')} from {edu.get('institution', 'N/A')}")
+        if cv_info.projects:
+            cv_details.append(f"Notable Projects: {len(cv_info.projects)} project(s)")
+        if cv_info.certifications:
+            cv_details.append(f"Certifications: {', '.join(cv_info.certifications[:5])}")
+        if cv_info.summary:
+            cv_details.append(f"Summary: {cv_info.summary[:200]}...")
+        cv_info_str = "\n".join(cv_details)
+    
+    # Format CV verification results
+    cv_verification_str = ""
+    if cv_verification:
+        verification_details = []
+        verification_details.append(f"Overall CV Verification Score: {cv_verification.overall_verification_score:.1f}/10")
+        verification_details.append(f"Credibility Status: {cv_verification.overall_credibility}")
+        
+        # Unverified or low-scoring skills to probe
+        unverified_skills = [
+            s.skill_name for s in cv_verification.skills_verification 
+            if s.verification_score < 6 or s.verification_status in ['not_verified', 'unverified']
+        ]
+        if unverified_skills:
+            verification_details.append(f"Skills Needing Verification: {', '.join(unverified_skills[:5])}")
+        
+        # Work experience with red flags
+        if cv_verification.major_red_flags:
+            verification_details.append(f"Red Flags Identified: {'; '.join(cv_verification.major_red_flags[:3])}")
+        
+        # Suggested focus areas
+        if cv_verification.suggested_focus_areas:
+            verification_details.append(f"Suggested Focus: {', '.join(cv_verification.suggested_focus_areas[:3])}")
+        
+        # Areas of concern
+        if cv_verification.areas_of_concern:
+            verification_details.append(f"Areas of Concern: {', '.join(cv_verification.areas_of_concern[:3])}")
+        
+        cv_verification_str = "\n".join(verification_details)
+    
+    # Format CV-JD matching results (NEW)
+    cv_jd_matching_str = ""
+    if cv_jd_matching:
+        matching_details = []
+        matching_details.append(f"Overall Matching Score: {cv_jd_matching.get('overall_matching_score', 'N/A')}/100")
+        matching_details.append(f"Matching Level: {cv_jd_matching.get('matching_level', 'Unknown')}")
+        
+        # Matched skills (HIGH PRIORITY for questions)
+        skills_match = cv_jd_matching.get('skills_matching', {})
+        matched_skills = skills_match.get('matched_skills', [])
+        missing_skills = skills_match.get('missing_skills', [])
+        
+        if matched_skills:
+            matching_details.append(f"✅ JD-Matched Skills to Verify: {', '.join(matched_skills[:8])}")
+        if missing_skills:
+            matching_details.append(f"⚠️ Missing Skills (assess transferable knowledge): {', '.join(missing_skills[:5])}")
+        
+        # Experience matching
+        exp_match = cv_jd_matching.get('experience_matching', {})
+        if exp_match.get('gaps'):
+            matching_details.append(f"Experience Gaps: {', '.join(exp_match['gaps'][:3])}")
+        
+        # Concerns and strengths
+        if cv_jd_matching.get('concerns'):
+            matching_details.append(f"🚩 Concerns to Address: {'; '.join(cv_jd_matching['concerns'][:3])}")
+        if cv_jd_matching.get('strengths'):
+            matching_details.append(f"💪 Candidate Strengths: {'; '.join(cv_jd_matching['strengths'][:3])}")
+        
+        # Recommended focus
+        if cv_jd_matching.get('recommended_focus_areas'):
+            matching_details.append(f"📌 Recommended Focus: {', '.join(cv_jd_matching['recommended_focus_areas'][:3])}")
+        
+        cv_jd_matching_str = "\n".join(matching_details)
     
     # Format interview history with summarization strategy
     # Recent questions: full detail, Older questions: summarized
@@ -147,12 +245,45 @@ def call_llm_generate_question(
     
     prompt_text = f"""
 You are an expert AI interviewer conducting a technical interview for a {job_role} position.
+Your goal is to verify the candidate's CV claims through targeted questions.
 
 Job Context:
 {'-' * 60}
 Role: {job_role}
 {job_info_str if job_info_str else 'No additional job information provided.'}
 {'-' * 60}
+
+{f'''Candidate CV Information:
+{'-' * 60}
+{cv_info_str}
+{'-' * 60}
+''' if cv_info_str else ''}
+
+{f'''CV-JD Matching Analysis:
+{'-' * 60}
+{cv_jd_matching_str}
+{'-' * 60}
+
+**CRITICAL PRIORITY**: Use CV-JD matching to guide question selection:
+1. **FIRST PRIORITY**: Verify JD-matched skills (✅) - These are most relevant to the job
+2. **SECOND PRIORITY**: Probe concerns (🚩) identified in matching analysis
+3. **THIRD PRIORITY**: Assess missing skills (⚠️) - Check for transferable knowledge
+4. **FOURTH PRIORITY**: Explore experience gaps
+5. Focus on recommended areas (📌)
+
+''' if cv_jd_matching_str else ''}
+
+{f'''CV Verification Status:
+{'-' * 60}
+{cv_verification_str}
+{'-' * 60}
+
+**IMPORTANT**: Use the verification status to guide your next question:
+- Target skills/experience that are "not_verified" or have low scores (<6)
+- Probe deeper into areas with red flags
+- Verify claims that seem inconsistent
+- Ask specific questions about projects, technologies, or experiences mentioned in CV
+''' if cv_verification_str else ''}
 
 Interview Progress:
 - Current Question: {questions_asked_count + 1} of {total_planned}
@@ -162,19 +293,27 @@ Interview Progress:
 
 Instructions:
 1. **For the FIRST question** (if no history): Generate a warm-up question that assesses fundamental knowledge relevant to the {job_role} role and the job requirements.
+   {'- Consider the candidate background from their CV (skills: ' + ', '.join(cv_info.skills[:5]) + ')' if cv_info and cv_info.skills else ''}
+   {'- Reference their experience level (' + str(cv_info.years_of_experience) + ' years)' if cv_info and cv_info.years_of_experience else ''}
 
 2. **For SUBSEQUENT questions** (if history exists):
    - Analyze the candidate's previous answer(s) carefully
    - Identify areas where the candidate showed strength or weakness
+   {'- **PRIORITIZE verifying unverified CV claims** (skills, experience, projects with low scores)' if cv_verification else ''}
+   {'- **INVESTIGATE red flags** identified in verification results' if cv_verification and cv_verification.major_red_flags else ''}
    - Generate a follow-up question that:
      a) Explores topics the candidate mentioned but didn't fully explain
      b) Probes deeper into areas where they showed expertise
      c) Addresses gaps or misconceptions in their previous answers
-     d) Progressively increases difficulty if candidate is performing well
-     e) Adjusts to medium difficulty if candidate is struggling
+     d) **Verifies specific CV claims** (e.g., "You mentioned React in your CV, can you explain...")
+     e) Progressively increases difficulty if candidate is performing well
+     f) Adjusts to medium difficulty if candidate is struggling
+   {'- Relate questions to their CV experience (projects, technologies, past roles)' if cv_info else ''}
 
 3. **Question Quality Guidelines**:
    - Make questions specific to the role and job requirements
+   {'- Tailor questions to the candidate experience level and background from CV' if cv_info else ''}
+   {'- **Focus on verifying CV claims** - ask about specific skills, projects, or experiences they listed' if cv_info else ''}
    - Ensure questions are clear and unambiguous
    - For technical roles, include practical scenarios when appropriate
    - Questions should be answerable in 2-3 minutes
@@ -182,10 +321,13 @@ Instructions:
 
 4. **Topics to Cover** (across all questions):
    - Technical skills relevant to {job_role}
+   {'- **CV Skills to Verify**: ' + ', '.join(cv_info.skills[:5]) if cv_info and cv_info.skills else ''}
+   {'- **Unverified Skills**: ' + ', '.join([s.skill_name for s in cv_verification.skills_verification if s.verification_score < 6][:3]) if cv_verification and cv_verification.skills_verification else ''}
    - Problem-solving ability
    - System design / Architecture (for senior roles)
    - Best practices and industry standards
    - Real-world application of knowledge
+   {'- **CV Projects to Verify**: ' + ', '.join([p.get('name', '') for p in cv_info.projects[:3]]) if cv_info and cv_info.projects else ''}
 
 5. **Response Format**:
 Respond ONLY with a valid JSON object in this exact format:
@@ -194,7 +336,8 @@ Respond ONLY with a valid JSON object in this exact format:
   "question": {{
     "text": "The complete question text here",
     "topic": "Category/Topic of the question (e.g., 'System Design', 'Java Fundamentals', 'React Hooks')",
-    "difficulty": "Easy | Medium | Hard"
+    "difficulty": "Easy | Medium | Hard",
+    "cv_verification_target": "Optional: What CV claim this question is verifying (e.g., 'React skill', 'Project X', 'AWS certification')"
   }}
 }}
 
@@ -204,6 +347,13 @@ Important:
 - The question should be conversational and natural
 - Consider the job level and requirements when setting difficulty
 """
+    
+    # Add conditional instructions outside f-string to avoid backslash issues
+    if cv_info:
+        prompt_text += "\n- Use CV information to make questions more relevant and personalized"
+    if cv_verification:
+        prompt_text += "\n- **PRIORITIZE questions that verify unverified or low-scoring CV claims**"
+
 
     print(f"Sending question generation prompt ({len(prompt_text)} chars) to LLM...")
     

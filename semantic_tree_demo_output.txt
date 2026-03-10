@@ -1,0 +1,12 @@
+================================================================================
+Traceback (most recent call last):
+  File "D:\Shool\Document\DoAnTotNghiep\interview-agent-langgraph-main\test_semantic_tree.py", line 271, in <module>
+    demo_semantic_tree()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "D:\Shool\Document\DoAnTotNghiep\interview-agent-langgraph-main\test_semantic_tree.py", line 17, in demo_semantic_tree
+    print("\U0001f333 SEMANTIC DECISION TREE DEMO")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\hthan\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f333' in position 0: character maps to <undefined>

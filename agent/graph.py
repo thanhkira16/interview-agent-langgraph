@@ -1,10 +1,10 @@
 
 from langgraph.graph import StateGraph, END
-from .models import InterviewState
+from agent.models import InterviewState
 
-from .nodes import (
+from agent.nodes import (
     start_interview_node,
-    select_question_node,
+    generate_question_node,
     ask_question_node,
     receive_response_node,
     process_response_node,
@@ -15,12 +15,11 @@ from .nodes import (
     decide_next_after_select,
     decide_next_after_update,
 )
-app = None
-saver = None
+
 
 workflow = StateGraph(InterviewState)
 workflow.add_node("start_interview", start_interview_node)
-workflow.add_node("select_question", select_question_node)
+workflow.add_node("generate_question", generate_question_node)
 workflow.add_node("ask_question", ask_question_node)
 workflow.add_node("receive_response", receive_response_node)
 workflow.add_node("process_response", process_response_node)
@@ -31,9 +30,9 @@ workflow.add_node("generate_final_report", generate_final_report_node)
 
 # Define workflow flow
 workflow.set_entry_point("start_interview")
-workflow.add_edge("start_interview", "select_question")
+workflow.add_edge("start_interview", "generate_question")
 workflow.add_conditional_edges(
-    "select_question",
+    "generate_question",
     decide_next_after_select,
     {
         "ask_question": "ask_question",
@@ -50,7 +49,7 @@ workflow.add_conditional_edges(
     "update_state",
     decide_next_after_update,
     {
-        "select_question": "select_question",
+        "generate_question": "generate_question",
         "generate_final_report": "generate_final_report",  # Go to final report when done
     }
 )
@@ -58,4 +57,5 @@ workflow.add_conditional_edges(
 # Final report leads to END
 workflow.add_edge("generate_final_report", END)
 
-
+# Compile the graph
+app = workflow.compile()

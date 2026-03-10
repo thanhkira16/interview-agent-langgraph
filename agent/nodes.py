@@ -13,6 +13,40 @@ from .llm_helpers import (
     call_llm_generate_feedback,
 )
 
+
+def _ensure_semantic_tree(state: InterviewState):
+    """
+    Ensure semantic tree exists. If None (due to serialization exclusion),
+    rebuild it from interview_history.
+    
+    Returns:
+        SemanticInterviewTree instance
+    """
+    from .tree_manager import SemanticInterviewTree
+    
+    if state.semantic_tree is not None:
+        return state.semantic_tree
+    
+    # Rebuild tree from history
+    print("🌳 Rebuilding semantic tree from interview history...")
+    tree = SemanticInterviewTree()
+    
+    for qa_data in state.interview_history:
+        try:
+            tree.add_qa_to_tree(
+                question=qa_data.get("question"),
+                response=qa_data.get("response"),
+                analysis=qa_data.get("analysis"),
+                evaluation=qa_data.get("evaluation"),
+                feedback=qa_data.get("feedback"),
+                timestamp=qa_data.get("timestamp", datetime.now())
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to add Q&A to rebuilt tree: {e}")
+    
+    print(f"   ✅ Tree rebuilt with {len(state.interview_history)} Q&A pairs")
+    return tree
+
 def start_interview_node(state: InterviewState) -> Dict[str, Any]:
     print("--- Node: start_interview ---")
     job_role = state.job_role
@@ -20,10 +54,10 @@ def start_interview_node(state: InterviewState) -> Dict[str, Any]:
 
     print(f"Starting AI-powered interview for {candidate_id} ({job_role})")
     print("Interview mode: Dynamic question generation using AI")
-
-    # No longer fetching questions from database
-    # AI will generate questions dynamically based on context
+    print("🌳 Token Optimization: Using Semantic Decision Tree")
     
+    # Note: semantic_tree is NOT added to updates because it's excluded from serialization
+    # It will be rebuilt from interview_history when needed via _ensure_semantic_tree()
     updates = {
         "interview_status": "in_progress",
         "questions_asked_count": 0,
@@ -39,27 +73,94 @@ def start_interview_node(state: InterviewState) -> Dict[str, Any]:
     }
 
     return updates
-def select_question_node(state: InterviewState) -> Dict[str, Any]:
-    print("--- Node: select_question ---")
+def generate_question_node(state: InterviewState) -> Dict[str, Any]:
+    print("--- Node: generate_question ---")
     asked_count = state.questions_asked_count
     total_planned = state.total_questions_planned
     interview_history = state.interview_history
     job_role = state.job_role
     job_info = state.job_info
+    cv_info = state.cv_info  # Get CV information from state
+    cv_verification = state.cv_verification  # Get CV verification results
+    cv_jd_matching = state.cv_jd_matching  # Get CV-JD matching (if already calculated)
 
     if asked_count >= total_planned:
          print("System limit reached: Reached planned questions count. Forcing end.")
          return {"interview_status": "completed"}
 
+    # 💾 SMART CACHING: Calculate CV-JD matching once and reuse
+    # Only calculate if not already done (cv_jd_matching is None)
+    if cv_jd_matching is None and cv_info and job_info:
+        from .cv_jd_matching import calculate_cv_jd_matching
+        from .config import llm
+        print("📊 Calculating CV-JD matching for targeted question generation...")
+        cv_jd_matching = calculate_cv_jd_matching(cv_info, job_info, llm)
+        print(f"   Matching Score: {cv_jd_matching.get('overall_matching_score', 'N/A')}/100")
+        print(f"   Matching Level: {cv_jd_matching.get('matching_level', 'Unknown')}")
+    elif cv_jd_matching:
+        print("💾 Reusing cached CV-JD matching results")
+        print(f"   Matching Score: {cv_jd_matching.get('overall_matching_score', 'N/A')}/100")
+
+    # 🌳 TOKEN OPTIMIZATION: Use semantic tree to get only relevant context
+    # Instead of passing entire interview_history, we traverse the tree
+    relevant_context = []
+    
+    # Ensure tree exists (rebuild from history if needed)
+    semantic_tree = _ensure_semantic_tree(state)
+    
+    if semantic_tree and asked_count > 0:
+        # Predict next question category/subcategory based on CV-JD matching
+        next_category = None
+        next_subcategory = None
+        keywords = []
+        
+        if cv_jd_matching:
+            # Focus on unmatched or weak areas
+            skills_matching = cv_jd_matching.get('skills_matching', {})
+            missing_skills = skills_matching.get('missing_skills', [])
+            if missing_skills:
+                next_category = "Skill"
+                next_subcategory = missing_skills[0] if missing_skills else None
+                keywords = missing_skills[:3]
+        
+        # Get relevant Q&A pairs from tree (instead of full history)
+        relevant_context = semantic_tree.get_relevant_context(
+            next_question_category=next_category,
+            next_question_subcategory=next_subcategory,
+            keywords=keywords,
+            max_items=5  # Only get top 5 relevant Q&As instead of all history
+        )
+        
+        print(f"🌳 Token Optimization: Retrieved {len(relevant_context)} relevant Q&As from tree")
+        print(f"   (vs {len(interview_history)} total Q&As in full history)")
+        print(f"   Token savings: ~{(1 - len(relevant_context)/max(len(interview_history), 1)) * 100:.0f}%")
+    else:
+        # First question or tree not available, use full history
+        relevant_context = interview_history
+    
     # Use AI to GENERATE question dynamically based on context
-    # Instead of selecting from a fixed pool
     from .llm_helpers import call_llm_generate_question
     
     print(f"Generating question {asked_count + 1}/{total_planned} using AI...")
+    if cv_info:
+        print(f"  Using CV info for: {cv_info.candidate_name or 'Unknown candidate'}")
+    if cv_jd_matching:
+        matched_skills = cv_jd_matching.get('skills_matching', {}).get('matched_skills', [])
+        if matched_skills:
+            print(f"  🎯 Targeting JD-matched skills: {', '.join(matched_skills[:3])}")
+    if cv_verification:
+        print(f"  CV Verification Score: {cv_verification.overall_verification_score:.1f}/10 ({cv_verification.overall_credibility})")
+        unverified_count = cv_verification.total_items_unverified
+        if unverified_count > 0:
+            print(f"  Targeting {unverified_count} unverified CV claims")
+    
     generated_question = call_llm_generate_question(
-        interview_history=interview_history,
+        interview_history=relevant_context,  # 🌳 Use relevant context instead of full history
         job_role=job_role,
         job_info=job_info,
+        cv_info=cv_info,  # Pass CV information to question generator
+        cv_verification=cv_verification,  # Pass CV verification results
+        cv_jd_matching=cv_jd_matching,  # Pass CV-JD matching results
         questions_asked_count=asked_count,
         total_planned=total_planned,
     )
@@ -70,11 +171,19 @@ def select_question_node(state: InterviewState) -> Dict[str, Any]:
         return {"interview_status": "terminated", "error_message": error_message}
 
     print(f"✅ Generated question: {generated_question.get('text', '')[:80]}...")
+    if generated_question.get('cv_verification_target'):
+        print(f"   Verifying: {generated_question.get('cv_verification_target')}")
+    if generated_question.get('jd_alignment'):
+        print(f"   JD Alignment: {generated_question.get('jd_alignment', '')[:60]}...")
     
     updates = {
         "current_question": generated_question,
         "interview_status": state.interview_status
     }
+    
+    # Store cv_jd_matching in state if calculated
+    if cv_jd_matching and state.cv_jd_matching is None:
+        updates["cv_jd_matching"] = cv_jd_matching
 
     return updates
 def ask_question_node(state: InterviewState) -> Dict[str, Any]:
@@ -203,6 +312,29 @@ def update_state_node(state: InterviewState) -> Dict[str, Any]:
 
     interview_history = state.interview_history + [current_cycle_data]
 
+    # 🌳 Update semantic tree with new Q&A data
+    # Ensure tree exists (rebuild from history if needed)
+    semantic_tree = _ensure_semantic_tree(state)
+    if semantic_tree:
+        try:
+            semantic_tree.add_qa_to_tree(
+                question=state.current_question,
+                response=state.candidate_response,
+                analysis=state.response_analysis,
+                evaluation=state.response_evaluation,
+                feedback=state.feedback,
+                timestamp=datetime.now()
+            )
+            print("🌳 Semantic tree updated with new Q&A")
+            
+            # Show tree summary for debugging
+            if state.questions_asked_count % 3 == 0:  # Every 3 questions
+                tree_summary = semantic_tree.get_tree_summary()
+                print(f"🌳 Tree Summary: {tree_summary}")
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to update semantic tree: {e}")
+            # Continue even if tree update fails
+
     latest_score = state.response_evaluation.get("score", 0.0) if state.response_evaluation else 0.0
     if latest_score is  None:
         latest_score=0
@@ -253,7 +385,7 @@ def decide_next_after_update(state: InterviewState):
         return "generate_final_report"
     elif state.questions_asked_count < state.total_questions_planned:
         print(f"Asked {state.questions_asked_count}/{state.total_questions_planned} questions. Proceeding to select next question.")
-        return "select_question"
+        return "generate_question"
     else:
         print("Completion criteria met. Going to final report.")
         return "generate_final_report"
